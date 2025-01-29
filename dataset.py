@@ -247,7 +247,15 @@ class Street2ShopImageSimilarityDataset(Dataset):
         if isinstance(idx, int):
             return _process_single_item(idx)
         
-        return [_process_single_item(i) for i in idx]
+        output = []
+        for i in idx:
+            try:
+                output.append(_process_single_item(i))
+            except Exception as e:
+                print(f"Error processing item {i}: {e}")
+                continue
+        
+        return output
         
 
 class Street2ShopImageSimilarityTestDataset(Dataset):
