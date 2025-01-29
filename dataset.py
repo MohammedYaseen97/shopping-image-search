@@ -4,78 +4,38 @@ import random
 from tqdm import tqdm
 from torchvision import transforms
 from sklearn.model_selection import train_test_split
-import pandas as pd
 from datasets import Dataset
+import faiss
 import torch
+import os
 
+from models.xception import XceptionModel
 SEED = 42
 
-# Shop images are clean product photos, street images are user photos with crops
-shop_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.RandomHorizontalFlip(p=0.3),  # Product may be flipped in street photo
-    transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),  # Slight color variation
-])
-
-street_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.RandomHorizontalFlip(p=0.3),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),  # More color variation
-    transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),  # Perspective variation
-    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),  # Blur from camera motion/quality
-])
-
-# Define a separate ToTensor and Normalize transform
-to_tensor_and_normalize = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-def identify_valid_rows(dataset_imgs):
-    valid_idx = []
-
-    for i in tqdm(range(len(dataset_imgs)), desc="Identifying valid images"):
-        try:
-            item = dataset_imgs[i]            
-            valid_idx.append(i)     # If no exception is raised, add the index to valid_idx
-        except Exception as e:
-            print(f"Error processing image at index {i}: {e}")
-            continue  # Skip the corrupted image
-
-    return valid_idx
-
-def get_cropped_image(item):
-    street_img = item['street_photo_image']
-    left = int(item['left'])
-    top = int(item['top'])
-    width = int(item['width'])
-    height = int(item['height'])
-    return street_img.crop((left, top, left + width, top + height))
-
-def transform_images(example):
-    try:
-        if example['street_photo_image'].mode != 'RGB':
-            example['street_photo_image'] = example['street_photo_image'].convert('RGB')
-        example['street_photo_image'] = get_cropped_image(example)
-        example['street_photo_image'] = street_transform(example['street_photo_image'])
-        
-        if example['shop_photo_image'].mode != 'RGB':
-            example['shop_photo_image'] = example['shop_photo_image'].convert('RGB')
-        example['shop_photo_image'] = shop_transform(example['shop_photo_image'])
-        
-        # Mark the example as valid
-        return {**example, 'valid': True}
-    except Exception as e:
-        print(f"Error processing image: {e}")
-        # Mark the example as invalid
-        return {**example, 'valid': False}
 
 class Street2ShopImageSimilarityDataset(Dataset):
-    def __init__(self, shop_transform=shop_transform, street_transform=street_transform, num_negative_pairs=2, ratio=1.0):
+    shop_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(p=0.3),  # Product may be flipped in street photo
+        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),  # Slight color variation
+    ])
+    
+    street_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(p=0.3),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),  # More color variation
+        transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),  # Perspective variation
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),  # Blur from camera motion/quality
+    ])
+    
+    to_tensor_and_normalize = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    
+    def __init__(self, num_negative_pairs=2, ratio=1.0):
         print('Initializing Street2ShopImageSimilarityDataset..')
         
-        self.shop_transform = shop_transform
-        self.street_transform = street_transform
         dataset_path = f'street2shop_{ratio}' if ratio < 1 else 'street2shop'
         dataset_path_without_ratio = dataset_path.rstrip(f'_{ratio}')
         dataset_imgs_path = f'street2shop_imgs_{ratio}' if ratio < 1 else 'street2shop_imgs'
@@ -102,7 +62,7 @@ class Street2ShopImageSimilarityDataset(Dataset):
         
             # Add an index column to the dataset
             self.dataset = self.dataset.add_column('index', list(range(len(self.dataset))))
-            self.sample_dataset(ratio) # dataset already split/sampled & updated inside the function
+            self._sample_dataset(ratio) # dataset already split/sampled & updated inside the function
             
             self.dataset.save_to_disk(dataset_path)
         
@@ -124,13 +84,13 @@ class Street2ShopImageSimilarityDataset(Dataset):
         del self.dataset # Free up memory
         
         # Load dataset images
-        valid_idx = []
+        valid_idx_set = set()
         try:
             print(f"Loading dataset images from {dataset_imgs_path}...")
             
             self.dataset_imgs = load_from_disk(dataset_imgs_path)
             
-            valid_idx = list(self.dataset_imgs['index'])
+            valid_idx_set = set(self.dataset_imgs['index'])
         except FileNotFoundError:
             print(f"Dataset images not found at {dataset_imgs_path}. Loading {dataset_path_without_ratio} dataset images and performing transforms...")
             
@@ -139,68 +99,106 @@ class Street2ShopImageSimilarityDataset(Dataset):
             except FileNotFoundError:
                 self.dataset_imgs = load_dataset(dataset_path_without_ratio)['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
             
+            # Add an index column to the dataset
+            self.dataset_imgs = self.dataset_imgs.add_column('index', list(range(len(self.dataset_imgs))))
             self.dataset_imgs = self.dataset_imgs.select(sampled_indices) # this matches the sampled indices of the dataset - pairs are generated based on this
             
             # now to remove the corrupted images, and images that are giving errors while transforming
-            # gotta track the deleted rows from here on out
-            self.dataset_imgs = self.dataset_imgs.add_column('index', list(range(len(self.dataset_imgs))))
-            valid_idx = identify_valid_rows(self.dataset_imgs)
-            self.dataset_imgs = self.dataset_imgs.select(valid_idx)
+            def _identify_valid_rows(dataset_imgs):
+                valid_idx_set = set()
+                under_process_idx = []
+                for i in tqdm(range(len(dataset_imgs)), desc="Identifying valid images"):
+                    try:
+                        item = dataset_imgs[i]            
+                        valid_idx_set.add(item['index'])
+                        under_process_idx.append(i) # If no exception is raised, add the index to valid_idx
+                    except Exception as e:
+                        print(f"Error processing image at index {i}: {e}")
+                        continue  # Skip the corrupted image
+                return valid_idx_set, under_process_idx
+            
+            valid_idx_set, under_process_idx = _identify_valid_rows(self.dataset_imgs)
+            self.dataset_imgs = self.dataset_imgs.select(under_process_idx)
             
             # Apply transformations with tqdm
             self.dataset_imgs = self.dataset_imgs.map(
-                lambda example: transform_images(example),
+                lambda example: self._transform_image(example),
                 desc="Transforming images"
             )
             
             # Rows with further issues while transforming .. to be subtracted from valid_idx
             invalid_idx_set = set([item['index'] for item in self.dataset_imgs if not item['valid']])
-            valid_idx = [i for i in valid_idx if i not in invalid_idx_set] # subtracting..
+            valid_idx_set = valid_idx_set - invalid_idx_set # subtracting..
             
             # finally removing the problematic rows found during transforms
             self.dataset_imgs = self.dataset_imgs.filter(lambda x: x['valid'])
             self.dataset_imgs.save_to_disk(dataset_imgs_path)
         
-        valid_idx_set = set(valid_idx)
         print('# of valid idx set:', len(valid_idx_set))
         
         # Filter pairs to only include valid indices
         self.pairs = [(s_idx, sh_idx, label) for s_idx, sh_idx, label in self.pairs if s_idx in valid_idx_set and sh_idx in valid_idx_set]
         print('# of pairs after filtering:', len(self.pairs))
+    
         
-    def sample_dataset(self, ratio):
+    def _sample_dataset(self, ratio):
         if ratio == 1:
             return
         
-        # Convert the dataset to a Pandas DataFrame
         df = self.dataset.to_pandas()
-        
-        # Perform stratified split
         train_df, _ = train_test_split(
             df,
-            test_size=ratio,
+            test_size=1-ratio,
             stratify=df['category'],
             random_state=SEED
-        )
-        
-        # Convert back to a Hugging Face dataset
-        self.dataset = Dataset.from_pandas(train_df)
+        )   # Perform stratified split
+        self.dataset = Dataset.from_pandas(train_df)    # Convert back to a Hugging Face dataset
+
+    
+    def _get_cropped_image(self, item):
+        street_img = item['street_photo_image']
+        left = int(item['left'])
+        top = int(item['top'])
+        width = int(item['width'])
+        height = int(item['height'])
+        return street_img.crop((left, top, left + width, top + height))
+    
+
+    def _transform_image(self, example):
+        try:
+            if example['street_photo_image'].mode != 'RGB':
+                example['street_photo_image'] = example['street_photo_image'].convert('RGB')
+            example['street_photo_image'] = self._get_cropped_image(example)
+            example['street_photo_image'] = self.street_transform(example['street_photo_image'])
             
+            if example['shop_photo_image'].mode != 'RGB':
+                example['shop_photo_image'] = example['shop_photo_image'].convert('RGB')
+            example['shop_photo_image'] = self.shop_transform(example['shop_photo_image'])
+            
+            # Mark the example as valid
+            return {**example, 'valid': True}
+        except Exception as e:
+            print(f"Error processing image: {e}")
+            # Mark the example as invalid
+            return {**example, 'valid': False}
+
+           
     def _generate_pairs(self):
         pairs = []
+        
         for idx, item in tqdm(enumerate(self.dataset), desc="Generating pairs", total=len(self.dataset)):
             # Positive pair
             pairs.append((idx, idx, 1))
-            
             # Generate negative pairs
             neg_indices = set()
             while len(neg_indices) < self.num_negative_pairs:
-                neg_idx = self._get_negative_pair(idx, item)
+                neg_idx = self._get_negative_pair(item)
                 if neg_idx not in neg_indices:  # Ensure unique negative pairs
                     neg_indices.add(neg_idx)
                     pairs.append((idx, neg_idx, -1))
-        
+                    
         return pairs
+
 
     def _is_different_item(self, item1, item2):
         """Check if two items are different based on image and crop coordinates"""
@@ -210,7 +208,8 @@ class Street2ShopImageSimilarityDataset(Dataset):
                 item1['width'] != item2['width'] or
                 item1['height'] != item2['height'])
 
-    def _get_negative_pair(self, idx, item):
+
+    def _get_negative_pair(self, item):
         """Generate a negative pair for a given item"""
         category_indices = self.category_groups[item['category']]
         while True:
@@ -219,8 +218,10 @@ class Street2ShopImageSimilarityDataset(Dataset):
             if self._is_different_item(item, neg_item):
                 return neg_idx
 
+
     def __len__(self):
         return len(self.pairs)
+
 
     def __getitem__(self, idx):
         def _process_single_item(idx):
@@ -238,8 +239,8 @@ class Street2ShopImageSimilarityDataset(Dataset):
                 shop_img = shop_img.convert('RGB')
             
             # Apply ToTensor and Normalize transformation
-            street_img = to_tensor_and_normalize(street_img)
-            shop_img = to_tensor_and_normalize(shop_img)
+            street_img = self.to_tensor_and_normalize(street_img)
+            shop_img = self.to_tensor_and_normalize(shop_img)
             
             return street_img, shop_img, label
 
@@ -256,67 +257,145 @@ class Street2ShopImageSimilarityDataset(Dataset):
                 continue
         
         return output
-        
+
+
+################################################################ 
+
 
 class Street2ShopImageSimilarityTestDataset(Dataset):
-    def __init__(self, street_transform=street_transform, ratio=1.0):
-        print('Initializing Street2ShopImageSimilarityTestDataset..')
+    def __init__(self, feature_extractor, batch_size=128, ratio=1.0, save_dir='.'):
+        self.feature_extractor = feature_extractor
+        self.feature_extractor.eval()
         
-        self.street_transform = street_transform
-        dataset_imgs_path = f'street2shop_imgs_{ratio}' if ratio < 1 else 'street2shop_imgs'
+        self.index_file = f's2s_test_{ratio}_{feature_extractor.model_name}{feature_extractor.embedding_dim}.faiss' if ratio < 1 else f's2s_test_{feature_extractor.model_name}{feature_extractor.embedding_dim}.faiss'
+        self.dataset_path = f'street2shop_test_{ratio}' if ratio < 1 else 'street2shop_test'
         
-        # Load dataset images
+        # load and sample/shuffle the test dataset
         try:
-            print(f"Loading dataset images from {dataset_imgs_path}...")
-            self.dataset_imgs = load_from_disk(dataset_imgs_path)
+            self.test_dataset = load_from_disk(self.dataset_path)
         except FileNotFoundError:
-            print(f"Dataset images not found at {dataset_imgs_path}. Loading dataset images and performing transforms...")
-            dataset_path_without_ratio = f'street2shop_{ratio}'.rstrip(f'_{ratio}')
             try:
-                self.dataset_imgs = load_from_disk(dataset_path_without_ratio)['test'].select_columns(['street_photo_image', 'left', 'top', 'width', 'height'])
+                self.test_dataset = load_from_disk('street2shop')['test']
             except FileNotFoundError:
-                self.dataset_imgs = load_dataset(dataset_path_without_ratio)['test'].select_columns(['street_photo_image', 'left', 'top', 'width', 'height'])
-            
-            # Apply transformations with tqdm
-            self.dataset_imgs = self.dataset_imgs.map(
-                lambda example: self._transform_and_crop_image(example),
-                desc="Transforming and cropping images"
-            )
-        
-        print("Length of test dataset:", len(self.dataset_imgs))
-        
-    def _transform_and_crop_image(self, example):
-        """Crop and transform the street photo image."""
-        street_img = example['street_photo_image']
-        if street_img.mode != 'RGB':
-            street_img = street_img.convert('RGB')
-        
-        # Crop the image
-        left = int(example['left'])
-        top = int(example['top'])
-        width = int(example['width'])
-        height = int(example['height'])
-        street_img = street_img.crop((left, top, left + width, top + height))
-        
-        # Apply street transform
-        street_img = self.street_transform(street_img)
-        
-        # Apply ToTensor and Normalize transformation
-        street_img = to_tensor_and_normalize(street_img)
-        
-        return {'street_photo_image': street_img}
+                self.test_dataset = load_dataset('street2shop')['test']
 
+            def _sample_dataset(dataset, ratio):
+                valid_indices = []
+                for i in random.sample(range(len(dataset)), int(len(dataset) * ratio)): # random indices
+                    try:
+                        item = dataset[i]   # check if the image at the index is uncorrupted
+                        valid_indices.append(i)
+                    except Exception as e:
+                        print(f"Error processing image at index {i}: {e}")
+                        continue
+                return dataset.select(valid_indices)
+            self.test_dataset = _sample_dataset(self.test_dataset, ratio)
+            self.test_dataset.save_to_disk(self.dataset_path)
+        
+        # transform and index shop images as vectors in FAISS local
+        shop_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        
+        res = faiss.StandardGpuResources()
+        if os.path.exists(self.index_file):
+            print(f"Loading FAISS index from {self.index_file}...")
+            self.gpu_index = faiss.read_index(os.path.join(save_dir, self.index_file))
+            self.gpu_index = faiss.index_cpu_to_gpu(res, 0, self.gpu_index)  # Transfer to GPU
+        else:
+            # Create a FAISS index for inner product (cosine similarity)
+            index = faiss.IndexFlatIP(self.feature_extractor.embedding_dim)
+            self.gpu_index = faiss.index_cpu_to_gpu(res, 0, index)  # Transfer to GPU
+            
+            # Process images in batches
+            for start_idx in tqdm(range(0, len(self.test_dataset), batch_size), desc="Indexing shop images"):
+                end_idx = min(start_idx + batch_size, len(self.test_dataset))
+                batch_items = self.test_dataset[start_idx:end_idx]
+                
+                # Transform and stack images
+                shop_imgs = torch.stack([shop_transform(item['shop_photo_image']) for item in batch_items])
+                
+                with torch.no_grad():
+                    features = self.feature_extractor(shop_imgs).numpy()
+                    # Normalize the features for cosine similarity
+                    faiss.normalize_L2(features)
+                
+                self.gpu_index.add(features)
+            
+            # Save the index to a file
+            print(f"Saving FAISS index to {self.index_file}...")
+            faiss.write_index(faiss.index_gpu_to_cpu(self.gpu_index), os.path.join(save_dir, self.index_file))
+        
     def __len__(self):
-        return len(self.dataset_imgs)
+        return len(self.test_dataset)
 
     def __getitem__(self, idx):
-        return self.dataset_imgs[idx]['street_photo_image']
+        return self.test_dataset[idx]
+
+
+################################################################ 
+
+
+def evaluate_top_k_accuracies(dataset, num_samples=100):
+    """
+    Evaluate the model using top-1, top-3, and top-5 accuracies.
+    
+    :param dataset: An instance of Street2ShopImageSimilarityTestDataset
+    :param num_samples: The number of random samples to evaluate
+    :return: A dictionary with top-1, top-3, and top-5 accuracies
+    """
+    # Randomly select indices from the test dataset
+    indices = random.sample(range(len(dataset.test_dataset)), num_samples)
+    
+    top_1_count = 0
+    top_3_count = 0
+    top_5_count = 0
+    
+    for idx in indices:
+        # Get the street photo and its true category
+        item = dataset.test_dataset[idx]
+        street_photo = item['street_photo_image']
+        true_category = item['category']
+        
+        # Perform the search
+        retrieved_indices = dataset.search(street_photo, k=5)
+        
+        # Check if the true category is in the top-k results
+        for position, retrieved_idx in enumerate(retrieved_indices[0]):  # retrieved_indices is a 2D array
+            retrieved_item = dataset.test_dataset[retrieved_idx]
+            if retrieved_item['category'] == true_category:
+                if position == 0:
+                    top_1_count += 1
+                if position < 3:
+                    top_3_count += 1
+                if position < 5:
+                    top_5_count += 1
+                break  # Stop checking once the correct category is found
+    
+    return {
+        'top_1_accuracy': top_1_count / num_samples,
+        'top_3_accuracy': top_3_count / num_samples,
+        'top_5_accuracy': top_5_count / num_samples
+    }
+
+
+################################################################ 
+
 
 if __name__ == '__main__':
-    dataset = Street2ShopImageSimilarityDataset(ratio=0.5)
-    print(len(dataset))
-    print(dataset[0])
+    # dataset = Street2ShopImageSimilarityDataset(ratio=0.5)
+    # print(len(dataset))
+    # print(dataset[0])
 
-    test_dataset = Street2ShopImageSimilarityTestDataset(ratio=0.5)
+    model = XceptionModel(embedding_dim=512)
+    test_dataset = Street2ShopImageSimilarityTestDataset(model, ratio=0.02)
     print(len(test_dataset))
     print(test_dataset[0])
+
+    # Assuming `dataset` is an instance of Street2ShopImageSimilarityTestDataset
+    accuracies = evaluate_top_k_accuracies(test_dataset, num_samples=10)
+    print("Top-1 Accuracy:", accuracies['top_1_accuracy'])
+    print("Top-3 Accuracy:", accuracies['top_3_accuracy'])
+    print("Top-5 Accuracy:", accuracies['top_5_accuracy'])
