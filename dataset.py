@@ -102,7 +102,7 @@ class Street2ShopImageSimilarityDataset(Dataset):
         
             # Add an index column to the dataset
             self.dataset = self.dataset.add_column('index', list(range(len(self.dataset))))
-            self.sample_dataset(ratio)
+            self.sample_dataset(ratio) # dataset already split/sampled & updated inside the function
             
             self.dataset.save_to_disk(dataset_path)
         
@@ -138,15 +138,13 @@ class Street2ShopImageSimilarityDataset(Dataset):
                 self.dataset_imgs = load_from_disk(dataset_path_without_ratio)['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
             except FileNotFoundError:
                 self.dataset_imgs = load_dataset(dataset_path_without_ratio)['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
-            self.dataset_imgs = self.dataset_imgs.select(sampled_indices)
             
-            # adding new index column to track the index of the uncorrupted images
+            self.dataset_imgs = self.dataset_imgs.select(sampled_indices) # this matches the sampled indices of the dataset - pairs are generated based on this
+            
+            # now to remove the corrupted images, and images that are giving errors while transforming
+            # gotta track the deleted rows from here on out
             self.dataset_imgs = self.dataset_imgs.add_column('index', list(range(len(self.dataset_imgs))))
-            
-            # Extract rows with uncorrupted images
             valid_idx = identify_valid_rows(self.dataset_imgs)
-
-            # Filter the dataset to only include rows with uncorrupted images
             self.dataset_imgs = self.dataset_imgs.select(valid_idx)
             
             # Apply transformations with tqdm
@@ -156,11 +154,11 @@ class Street2ShopImageSimilarityDataset(Dataset):
             )
             
             # Rows with further issues while transforming .. to be subtracted from valid_idx
-            invalid_idx_set = set([i for i in range(len(self.dataset_imgs)) if not self.dataset_imgs[i]['valid']])
+            invalid_idx_set = set([item['index'] for item in self.dataset_imgs if not item['valid']])
+            valid_idx = [i for i in valid_idx if i not in invalid_idx_set] # subtracting..
             
-            # Filter valid_idx to exclude newly discovered invalid indices
-            valid_idx = [i for i in valid_idx if i not in invalid_idx_set]
-            
+            # finally removing the problematic rows found during transforms
+            self.dataset_imgs = self.dataset_imgs.filter(lambda x: x['valid'])
             self.dataset_imgs.save_to_disk(dataset_imgs_path)
         
         valid_idx_set = set(valid_idx)
