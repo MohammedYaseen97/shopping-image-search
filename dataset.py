@@ -243,20 +243,72 @@ class Street2ShopImageSimilarityDataset(Dataset):
             
             return street_img, shop_img, label
 
-        # Handle both single index and batch (list) cases
-        if isinstance(idx, list):
-            # Process batch
-            batch_items = [_process_single_item(i) for i in idx]
-            street_imgs, shop_imgs, labels = zip(*batch_items)
-            
-            return (torch.stack(street_imgs), 
-                   torch.stack(shop_imgs),
-                   torch.tensor(labels))
+        # If idx is a single integer, return a single tuple
+        if isinstance(idx, int):
+            return _process_single_item(idx)
         
-        # Process single item
-        return _process_single_item(idx)
+        return [_process_single_item(i) for i in idx]
+        
+
+class Street2ShopImageSimilarityTestDataset(Dataset):
+    def __init__(self, street_transform=street_transform, ratio=1.0):
+        print('Initializing Street2ShopImageSimilarityTestDataset..')
+        
+        self.street_transform = street_transform
+        dataset_imgs_path = f'street2shop_imgs_{ratio}' if ratio < 1 else 'street2shop_imgs'
+        
+        # Load dataset images
+        try:
+            print(f"Loading dataset images from {dataset_imgs_path}...")
+            self.dataset_imgs = load_from_disk(dataset_imgs_path)
+        except FileNotFoundError:
+            print(f"Dataset images not found at {dataset_imgs_path}. Loading dataset images and performing transforms...")
+            dataset_path_without_ratio = f'street2shop_{ratio}'.rstrip(f'_{ratio}')
+            try:
+                self.dataset_imgs = load_from_disk(dataset_path_without_ratio)['test'].select_columns(['street_photo_image', 'left', 'top', 'width', 'height'])
+            except FileNotFoundError:
+                self.dataset_imgs = load_dataset(dataset_path_without_ratio)['test'].select_columns(['street_photo_image', 'left', 'top', 'width', 'height'])
+            
+            # Apply transformations with tqdm
+            self.dataset_imgs = self.dataset_imgs.map(
+                lambda example: self._transform_and_crop_image(example),
+                desc="Transforming and cropping images"
+            )
+        
+        print("Length of test dataset:", len(self.dataset_imgs))
+        
+    def _transform_and_crop_image(self, example):
+        """Crop and transform the street photo image."""
+        street_img = example['street_photo_image']
+        if street_img.mode != 'RGB':
+            street_img = street_img.convert('RGB')
+        
+        # Crop the image
+        left = int(example['left'])
+        top = int(example['top'])
+        width = int(example['width'])
+        height = int(example['height'])
+        street_img = street_img.crop((left, top, left + width, top + height))
+        
+        # Apply street transform
+        street_img = self.street_transform(street_img)
+        
+        # Apply ToTensor and Normalize transformation
+        street_img = to_tensor_and_normalize(street_img)
+        
+        return {'street_photo_image': street_img}
+
+    def __len__(self):
+        return len(self.dataset_imgs)
+
+    def __getitem__(self, idx):
+        return self.dataset_imgs[idx]['street_photo_image']
 
 if __name__ == '__main__':
     dataset = Street2ShopImageSimilarityDataset(ratio=0.5)
     print(len(dataset))
     print(dataset[0])
+
+    test_dataset = Street2ShopImageSimilarityTestDataset(ratio=0.5)
+    print(len(test_dataset))
+    print(test_dataset[0])

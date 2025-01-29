@@ -33,7 +33,8 @@ class Model(nn.Module):
         self.model.eval()
         total_loss = 0.0
         with torch.no_grad():
-            for street_imgs, shop_imgs, labels in val_dataloader:
+            batch_progress = tqdm(val_dataloader, desc="Validation", total=len(val_dataloader), leave=False)
+            for street_imgs, shop_imgs, labels in batch_progress:
                 
                 street_imgs = street_imgs.to(self.device)
                 shop_imgs = shop_imgs.to(self.device)
@@ -45,61 +46,50 @@ class Model(nn.Module):
                 loss = self.criterion(street_embeddings, shop_embeddings, labels)
                 total_loss += loss.item()
                 
-                # Clear CUDA cache
-                torch.cuda.empty_cache()
-                
-                # Optionally delete variables
-                del street_imgs, shop_imgs, labels, street_embeddings, shop_embeddings, loss
-        return total_loss / len(val_dataloader)
-
-    def train(self, dataloader, val_dataloader, optimizer, max_epochs=10, save_dir=None):
-        self.model.train()
-        progress_bar = tqdm(range(max_epochs), desc="Training")
-        best_val_loss = float('inf')
-        
-        for epoch in progress_bar:
-            running_loss = 0.0
-            batch_progress = tqdm(dataloader, desc=f"Epoch {epoch+1}/{max_epochs}", leave=False)
-            
-            for street_imgs, shop_imgs, labels in batch_progress:
-                
-                optimizer.zero_grad()
-                
-                street_imgs = street_imgs.to(self.device)
-                shop_imgs = shop_imgs.to(self.device)
-                labels = labels.to(self.device)
-                
-                street_embeddings = self.forward(street_imgs)
-                shop_embeddings = self.forward(shop_imgs)
-                             
-                loss = self.criterion(street_embeddings, shop_embeddings, labels)
-                
-                loss.backward()
-                optimizer.step()
-                
-                running_loss += loss.item()
                 batch_progress.set_postfix({'loss': f'{loss.item():.4f}'})
                 
                 # Clear CUDA cache
                 torch.cuda.empty_cache()
-                
-                # Optionally delete variables
-                del street_imgs, shop_imgs, labels, street_embeddings, shop_embeddings, loss
+        return total_loss / len(val_dataloader)
+
+    def train(self, dataloader, optimizer, val_dataloader=None, save_dir=None):
+        self.model.train()
+        running_loss = 0.0
+        batch_progress = tqdm(dataloader, desc="Training", total=len(dataloader), leave=False)
+        
+        for street_imgs, shop_imgs, labels in batch_progress:
+            optimizer.zero_grad()
             
-            avg_train_loss = running_loss / len(dataloader)
+            street_imgs = street_imgs.to(self.device)
+            shop_imgs = shop_imgs.to(self.device)
+            labels = labels.to(self.device)
+            
+            street_embeddings = self.forward(street_imgs)
+            shop_embeddings = self.forward(shop_imgs)
+            
+            loss = self.criterion(street_embeddings, shop_embeddings, labels)
+            
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            batch_progress.set_postfix({'loss': f'{loss.item():.4f}'})
+            
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
+            
+            # Optionally delete variables
+            del street_imgs, shop_imgs, labels, street_embeddings, shop_embeddings, loss
+        
+        avg_train_loss = running_loss / len(dataloader)
+        if val_dataloader:
             val_loss = self.calculate_validation_loss(val_dataloader)
+            print(f'Training loss: {avg_train_loss:.4f}, Validation loss: {val_loss:.4f}')
+        else:
+            print(f'Training loss: {avg_train_loss:.4f}')
             
-            progress_bar.set_postfix({
-                'train_loss': f'{avg_train_loss:.4f}',
-                'val_loss': f'{val_loss:.4f}'
-            })
-            
-            if val_loss > best_val_loss: # stop early if validation loss increases i.e overfitting
-                print(f'Stopping early at epoch {epoch+1} as validation loss increased')
-                break
-            
+        if save_dir:
             self.save(os.path.join(save_dir, self.model_weights_path))
-            best_val_loss = val_loss
             
 
     def predict(self, dataloader):
