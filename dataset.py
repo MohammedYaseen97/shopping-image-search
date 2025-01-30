@@ -93,7 +93,7 @@ class Street2ShopImageSimilarityDataset(Dataset):
             
             self.dataset_imgs = load_from_disk(disk_path)
             
-            valid_idx_set = set(self.dataset_imgs['index'])
+            valid_idx_set = set(range(len(self.dataset_imgs)))
         except FileNotFoundError:
             print(f"Dataset images not found at {disk_path}. Loading {hf_path} dataset images and performing transforms...")
             
@@ -105,25 +105,23 @@ class Street2ShopImageSimilarityDataset(Dataset):
                 self.dataset_imgs = self.dataset_imgs['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
             
             # Add an index column to the dataset
-            self.dataset_imgs = self.dataset_imgs.add_column('index', list(range(len(self.dataset_imgs))))
             self.dataset_imgs = self.dataset_imgs.select(sampled_indices) # this matches the sampled indices of the dataset - pairs are generated based on this
             
             # now to remove the corrupted images, and images that are giving errors while transforming
             def _identify_valid_rows(dataset_imgs):
-                valid_idx_set = set()
-                under_process_idx = []
+                valid_idx = []
                 for i in tqdm(range(len(dataset_imgs)), desc="Identifying valid images"):
                     try:
                         item = dataset_imgs[i]            
-                        valid_idx_set.add(item['index'])
-                        under_process_idx.append(i) # If no exception is raised, add the index to valid_idx
+                        valid_idx.append(i) # If no exception is raised, add the index to valid_idx
                     except Exception as e:
                         print(f"Error processing image at index {i}: {e}")
                         continue  # Skip the corrupted image
-                return valid_idx_set, under_process_idx
+                return valid_idx
             
-            valid_idx_set, under_process_idx = _identify_valid_rows(self.dataset_imgs)
-            self.dataset_imgs = self.dataset_imgs.select(under_process_idx)
+            valid_idx = _identify_valid_rows(self.dataset_imgs)
+            self.dataset_imgs = self.dataset_imgs.select(valid_idx)
+            valid_idx_set = set(valid_idx)
             
             # Apply transformations with tqdm
             self.dataset_imgs = self.dataset_imgs.map(
@@ -132,7 +130,7 @@ class Street2ShopImageSimilarityDataset(Dataset):
             )
             
             # Rows with further issues while transforming .. to be subtracted from valid_idx
-            invalid_idx_set = set([item['index'] for item in self.dataset_imgs if not item['valid']])
+            invalid_idx_set = set([i for i in range(len(self.dataset_imgs)) if not self.dataset_imgs[i]['valid']])
             valid_idx_set = valid_idx_set - invalid_idx_set # subtracting..
             
             # finally removing the problematic rows found during transforms
