@@ -1,6 +1,7 @@
 import torch
 from models.base import Model
 from models.xception import XceptionModel
+from models.clip_vit import CLIPViTModel
 from dataset import Street2ShopImageSimilarityDataset
 from dataloader import SimpleDataLoader
 import torch.nn as nn
@@ -95,7 +96,7 @@ def train(model: Model, dataloader: SimpleDataLoader, optimizer: torch.optim.Opt
             model.save(os.path.join(save_dir, model.model_weights_path))
 
 if __name__ == "__main__":
-    dataset = Street2ShopImageSimilarityDataset(ratio=.05)
+    dataset = Street2ShopImageSimilarityDataset(ratio=.6)
 
     # Split dataset into train and validation sets (80-20 split)
     train_size = int(0.8 * len(dataset))
@@ -110,10 +111,19 @@ if __name__ == "__main__":
 
     print(f"\n----------------------------------\n")
 
-    model = XceptionModel(embedding_dim=512)
-    # Adam optimizer is commonly used with XceptionNet
-    # Learning rate of 0.001 is a good starting point
-    # Weight decay (L2 regularization) helps prevent overfitting
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    # model = XceptionModel(embedding_dim=512)
+    # # Adam optimizer is commonly used with XceptionNet
+    # # Learning rate of 0.001 is a good starting point
+    # # Weight decay (L2 regularization) helps prevent overfitting
+    # optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    
+    # model = CLIPViTModel(embedding_dim=512)
+    # # AdamW optimizer is recommended for CLIP ViT models
+    # # Learning rate of 5e-5 is commonly used for fine-tuning vision transformers
+    # # Weight decay helps prevent overfitting while maintaining good performance
+    # optimizer = torch.optim.AdamW(model.parameters(), 
+    #                              lr=5e-5,
+    #                              weight_decay=0.01,
+    #                              betas=(0.9, 0.999))
 
     train(model, train_loader, optimizer, val_loader, device='cuda', save_dir='saved_models')

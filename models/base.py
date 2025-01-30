@@ -8,6 +8,7 @@ class Model(nn.Module):
     criterion: nn.Module
     model_name: str
     model: nn.Module
+    normalization: bool = False
     model_weights_path: str
     device: torch.device
     

@@ -312,15 +312,17 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
             # Process images in batches
             for start_idx in tqdm(range(0, len(self.test_dataset), batch_size), desc="Indexing shop images"):
                 end_idx = min(start_idx + batch_size, len(self.test_dataset))
-                batch_items = self.test_dataset[start_idx:end_idx]
+                batch_items = [self.test_dataset[i] for i in range(start_idx, end_idx)]
                 
                 # Transform and stack images
                 shop_imgs = torch.stack([shop_transform(item['shop_photo_image']) for item in batch_items])
                 
                 with torch.no_grad():
-                    features = self.feature_extractor(shop_imgs).numpy()
+                    shop_imgs = shop_imgs.to(self.feature_extractor.device)
+                    features = self.feature_extractor(shop_imgs).cpu().numpy()
                     # Normalize the features for cosine similarity
-                    faiss.normalize_L2(features)
+                    if not self.feature_extractor.normalization:
+                        faiss.normalize_L2(features)
                 
                 self.gpu_index.add(features)
             
@@ -332,7 +334,26 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
         return len(self.test_dataset)
 
     def __getitem__(self, idx):
-        return self.test_dataset[idx]
+        return self.test_dataset[idx]['street_photo_image']
+    
+    def search(self, street_photo, k=5):
+        """Search for the top-k similar shop images to the street photo."""
+        street_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        
+        street_img = street_transform(street_photo).unsqueeze(0)
+        with torch.no_grad():
+            street_img = street_img.to(self.feature_extractor.device)
+            query_features = self.feature_extractor(street_img).cpu().numpy()
+            # Normalize the query features
+            if not self.feature_extractor.normalization:
+                faiss.normalize_L2(query_features)
+        
+        distances, indices = self.gpu_index.search(query_features, k)
+        return indices.tolist()
 
 
 ################################################################ 
