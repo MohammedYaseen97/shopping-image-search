@@ -21,19 +21,11 @@ class CLIPViTModel(Model):
         # Move models to device
         self.vision_model.to(self.device)
         self.projection.to(self.device)
-        
-        # Delete the full CLIP model since we only need vision
-        del self.clip_model
     
     def forward(self, images):
-        # Process images using the CLIP processor
-        inputs = self.processor(images=images, return_tensors="pt").to(self.device)
-        # Get the image embeddings from vision model
-        outputs = self.vision_model(**inputs)
-        # Project to desired embedding dimension
+        outputs = self.vision_model(pixel_values=images)
         embeddings = self.projection(outputs.pooler_output)
-        # Normalize embeddings
-        embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
+        embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True) # normalize embeddings
         return embeddings
 
     def save(self, path=None):

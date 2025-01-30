@@ -8,6 +8,8 @@ import torch.nn as nn
 from tqdm import tqdm
 import os
 
+batch_size = 256
+
 def calculate_validation_loss(model: Model, val_dataloader: SimpleDataLoader, criterion: nn.Module=nn.CosineEmbeddingLoss(margin=0.5), device: str="cpu"):
     model.eval()
     total_loss = 0.0
@@ -117,13 +119,13 @@ if __name__ == "__main__":
     # # Weight decay (L2 regularization) helps prevent overfitting
     # optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     
-    # model = CLIPViTModel(embedding_dim=512)
-    # # AdamW optimizer is recommended for CLIP ViT models
-    # # Learning rate of 5e-5 is commonly used for fine-tuning vision transformers
-    # # Weight decay helps prevent overfitting while maintaining good performance
-    # optimizer = torch.optim.AdamW(model.parameters(), 
-    #                              lr=5e-5,
-    #                              weight_decay=0.01,
-    #                              betas=(0.9, 0.999))
+    model = CLIPViTModel(embedding_dim=512)
+    # AdamW optimizer is recommended for CLIP ViT models
+    # Learning rate of 5e-5 is commonly used for fine-tuning vision transformers
+    # Weight decay helps prevent overfitting while maintaining good performance
+    optimizer = torch.optim.AdamW(model.parameters(), 
+                                 lr=5e-5,
+                                 weight_decay=0.01,
+                                 betas=(0.9, 0.999))
 
     train(model, train_loader, optimizer, val_loader, device='cuda', save_dir='saved_models')

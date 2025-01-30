@@ -36,35 +36,36 @@ class Street2ShopImageSimilarityDataset(Dataset):
     def __init__(self, num_negative_pairs=2, ratio=1.0):
         print('Initializing Street2ShopImageSimilarityDataset..')
         
-        dataset_path = f'street2shop_{ratio}' if ratio < 1 else 'street2shop'
-        dataset_path_without_ratio = dataset_path.rstrip(f'_{ratio}')
-        dataset_imgs_path = f'street2shop_imgs_{ratio}' if ratio < 1 else 'street2shop_imgs'
+        disk_path = f'street2shop_{ratio}' if ratio < 1 else 'street2shop'
+        hf_path = f'petr7555/street2shop'
         self.num_negative_pairs = num_negative_pairs
         sampled_indices = None
         
         # Load the dataset from disk, remove the image columns to save memory
         try:
-            print(f"Loading dataset from {dataset_path}...")
+            print(f"Loading dataset from {disk_path}...")
             
-            self.dataset = load_from_disk(dataset_path)
+            self.dataset = load_from_disk(disk_path)
             
             # in case we load the original street2shop dataset
             if 'index' not in self.dataset.column_names:
                 self.dataset = self.dataset['train'].remove_columns(['type', 'street_photo_image', 'shop_photo_image'])
                 self.dataset = self.dataset.add_column('index', list(range(len(self.dataset))))
         except FileNotFoundError:
-            print(f"Dataset not found at {dataset_path}. Loading {dataset_path_without_ratio} dataset...")
+            print(f"Dataset not found at {disk_path}. Loading {hf_path} dataset...")
             
             try:
-                self.dataset = load_from_disk(dataset_path_without_ratio)['train'].remove_columns(['type', 'street_photo_image', 'shop_photo_image'])
+                self.dataset = load_from_disk(hf_path.split('/')[-1])['train'].remove_columns(['type', 'street_photo_image', 'shop_photo_image'])
             except FileNotFoundError:
-                self.dataset = load_dataset(dataset_path_without_ratio)['train'].remove_columns(['type', 'street_photo_image', 'shop_photo_image'])
+                self.dataset = load_dataset(hf_path)
+                self.dataset.save_to_disk(hf_path.split('/')[-1])
+                self.dataset = self.dataset['train'].remove_columns(['type', 'street_photo_image', 'shop_photo_image'])
         
             # Add an index column to the dataset
             self.dataset = self.dataset.add_column('index', list(range(len(self.dataset))))
             self._sample_dataset(ratio) # dataset already split/sampled & updated inside the function
             
-            self.dataset.save_to_disk(dataset_path)
+            self.dataset.save_to_disk(disk_path)
         
         print("Length of dataset:", len(self.dataset))
         sampled_indices = list(self.dataset['index'])
@@ -83,21 +84,25 @@ class Street2ShopImageSimilarityDataset(Dataset):
         print('# of pairs:', len(self.pairs))
         del self.dataset # Free up memory
         
+        disk_path = f'street2shop_imgs_{ratio}' if ratio < 1 else 'street2shop_imgs'
+        
         # Load dataset images
         valid_idx_set = set()
         try:
-            print(f"Loading dataset images from {dataset_imgs_path}...")
+            print(f"Loading dataset images from {disk_path}...")
             
-            self.dataset_imgs = load_from_disk(dataset_imgs_path)
+            self.dataset_imgs = load_from_disk(disk_path)
             
             valid_idx_set = set(self.dataset_imgs['index'])
         except FileNotFoundError:
-            print(f"Dataset images not found at {dataset_imgs_path}. Loading {dataset_path_without_ratio} dataset images and performing transforms...")
+            print(f"Dataset images not found at {disk_path}. Loading {hf_path} dataset images and performing transforms...")
             
             try:
-                self.dataset_imgs = load_from_disk(dataset_path_without_ratio)['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
+                self.dataset_imgs = load_from_disk(hf_path.split('/')[-1])['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
             except FileNotFoundError:
-                self.dataset_imgs = load_dataset(dataset_path_without_ratio)['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
+                self.dataset_imgs = load_dataset(hf_path)
+                self.dataset_imgs.save_to_disk(hf_path.split('/')[-1])
+                self.dataset_imgs = self.dataset_imgs['train'].select_columns(['street_photo_image', 'shop_photo_image', 'left', 'top', 'width', 'height'])
             
             # Add an index column to the dataset
             self.dataset_imgs = self.dataset_imgs.add_column('index', list(range(len(self.dataset_imgs))))
@@ -132,7 +137,7 @@ class Street2ShopImageSimilarityDataset(Dataset):
             
             # finally removing the problematic rows found during transforms
             self.dataset_imgs = self.dataset_imgs.filter(lambda x: x['valid'])
-            self.dataset_imgs.save_to_disk(dataset_imgs_path)
+            self.dataset_imgs.save_to_disk(disk_path)
         
         print('# of valid idx set:', len(valid_idx_set))
         
@@ -275,9 +280,11 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
             self.test_dataset = load_from_disk(self.dataset_path)
         except FileNotFoundError:
             try:
-                self.test_dataset = load_from_disk('street2shop')['test']
+                self.test_dataset = load_from_disk('street2shop')['test'].remove_columns(['street_photo_image', 'shop_photo_image'])
             except FileNotFoundError:
-                self.test_dataset = load_dataset('street2shop')['test']
+                self.test_dataset = load_dataset('street2shop')
+                self.test_dataset.save_to_disk('street2shop')
+                self.test_dataset = self.test_dataset['test'].remove_columns(['street_photo_image', 'shop_photo_image'])
 
             def _sample_dataset(dataset, ratio):
                 valid_indices = []
@@ -290,6 +297,7 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
                         continue
                 return dataset.select(valid_indices)
             self.test_dataset = _sample_dataset(self.test_dataset, ratio)
+            self.test_dataset = self.test_dataset.add_column('index', list(range(len(self.test_dataset))))
             self.test_dataset.save_to_disk(self.dataset_path)
         
         # transform and index shop images as vectors in FAISS local
@@ -305,8 +313,8 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
             self.gpu_index = faiss.read_index(os.path.join(save_dir, self.index_file))
             self.gpu_index = faiss.index_cpu_to_gpu(res, 0, self.gpu_index)  # Transfer to GPU
         else:
-            # Create a FAISS index for inner product (cosine similarity)
-            index = faiss.IndexFlatIP(self.feature_extractor.embedding_dim)
+            # Create an HNSW index for inner product (cosine similarity)
+            index = faiss.IndexHNSWFlat(self.feature_extractor.embedding_dim, 32)  # 32 is the number of neighbors in the graph
             self.gpu_index = faiss.index_cpu_to_gpu(res, 0, index)  # Transfer to GPU
             
             # Process images in batches
@@ -334,7 +342,7 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
         return len(self.test_dataset)
 
     def __getitem__(self, idx):
-        return self.test_dataset[idx]['street_photo_image']
+        return self.test_dataset[idx]
     
     def search(self, street_photo, k=5):
         """Search for the top-k similar shop images to the street photo."""
@@ -359,13 +367,16 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
 ################################################################ 
 
 
-def evaluate_top_k_accuracies(dataset, num_samples=100):
+def evaluate_top_k_accuracies(dataset, k=10, num_samples=100, num_visualize=5):
     """
-    Evaluate the model using top-1, top-3, and top-5 accuracies.
+    Evaluate the model using top-1, top-3, top-5 and top-10 accuracies.
     
     :param dataset: An instance of Street2ShopImageSimilarityTestDataset
     :param num_samples: The number of random samples to evaluate
-    :return: A dictionary with top-1, top-3, and top-5 accuracies
+    :param num_visualize: The number of random samples to return for visualization
+    :return: A tuple containing:
+        - Dictionary with top-1, top-3, top-5 and top-10 accuracies
+        - List of tuples (street_idx, retrieved_indices) for visualization
     """
     # Randomly select indices from the test dataset
     indices = random.sample(range(len(dataset.test_dataset)), num_samples)
@@ -373,50 +384,66 @@ def evaluate_top_k_accuracies(dataset, num_samples=100):
     top_1_count = 0
     top_3_count = 0
     top_5_count = 0
+    top_10_count = 0
+    
+    # Store all evaluation results
+    all_results = []
     
     for idx in indices:
         # Get the street photo and its true category
         item = dataset.test_dataset[idx]
         street_photo = item['street_photo_image']
-        true_category = item['category']
+        true_idx = item['index']
         
         # Perform the search
-        retrieved_indices = dataset.search(street_photo, k=5)
+        retrieved_indices = dataset.search(street_photo, k=k)
+        
+        # Store result
+        all_results.append((idx, retrieved_indices[0]))
         
         # Check if the true category is in the top-k results
         for position, retrieved_idx in enumerate(retrieved_indices[0]):  # retrieved_indices is a 2D array
             retrieved_item = dataset.test_dataset[retrieved_idx]
-            if retrieved_item['category'] == true_category:
+            if retrieved_item['index'] == true_idx:
                 if position == 0:
                     top_1_count += 1
                 if position < 3:
                     top_3_count += 1
                 if position < 5:
                     top_5_count += 1
+                if position < 10:
+                    top_10_count += 1
                 break  # Stop checking once the correct category is found
     
-    return {
+    accuracies = {
         'top_1_accuracy': top_1_count / num_samples,
         'top_3_accuracy': top_3_count / num_samples,
-        'top_5_accuracy': top_5_count / num_samples
+        'top_5_accuracy': top_5_count / num_samples,
+        'top_10_accuracy': top_10_count / num_samples
     }
+    
+    # Randomly select m samples for visualization
+    visualization_data = random.sample(all_results, min(num_visualize, len(all_results)))
+    
+    return accuracies, visualization_data
 
 
 ################################################################ 
 
 
 if __name__ == '__main__':
-    # dataset = Street2ShopImageSimilarityDataset(ratio=0.5)
-    # print(len(dataset))
-    # print(dataset[0])
+    dataset = Street2ShopImageSimilarityDataset(ratio=0.05)
+    print(len(dataset))
+    print(dataset[0])
+    del dataset
 
-    model = XceptionModel(embedding_dim=512)
-    test_dataset = Street2ShopImageSimilarityTestDataset(model, ratio=0.02)
-    print(len(test_dataset))
-    print(test_dataset[0])
+    # model = XceptionModel(embedding_dim=512)
+    # test_dataset = Street2ShopImageSimilarityTestDataset(model, ratio=0.6)
+    # print(len(test_dataset))
+    # print(test_dataset[0])
 
-    # Assuming `dataset` is an instance of Street2ShopImageSimilarityTestDataset
-    accuracies = evaluate_top_k_accuracies(test_dataset, num_samples=10)
-    print("Top-1 Accuracy:", accuracies['top_1_accuracy'])
-    print("Top-3 Accuracy:", accuracies['top_3_accuracy'])
-    print("Top-5 Accuracy:", accuracies['top_5_accuracy'])
+    # # Assuming `dataset` is an instance of Street2ShopImageSimilarityTestDataset
+    # accuracies = evaluate_top_k_accuracies(test_dataset, num_samples=10)
+    # print("Top-1 Accuracy:", accuracies['top_1_accuracy'])
+    # print("Top-3 Accuracy:", accuracies['top_3_accuracy'])
+    # print("Top-5 Accuracy:", accuracies['top_5_accuracy'])
