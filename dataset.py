@@ -8,6 +8,7 @@ from datasets import Dataset
 import faiss
 import torch
 import os
+import time
 
 from models.xception import XceptionModel
 SEED = 42
@@ -33,7 +34,7 @@ class Street2ShopImageSimilarityDataset(Dataset):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     
-    def __init__(self, num_negative_pairs=2, ratio=1.0):
+    def __init__(self, num_negative_pairs=1, ratio=1.0):
         print('Initializing Street2ShopImageSimilarityDataset..')
         
         disk_path = f'street2shop_{ratio}' if ratio < 1 else 'street2shop'
@@ -266,27 +267,26 @@ class Street2ShopImageSimilarityDataset(Dataset):
 
 
 class Street2ShopImageSimilarityTestDataset(Dataset):
-    def __init__(self, feature_extractor, batch_size=128, ratio=1.0, save_dir='.'):
-        self.feature_extractor = feature_extractor
-        self.feature_extractor.eval()
-        
-        self.index_file = f's2s_test_{ratio}_{feature_extractor.model_name}{feature_extractor.embedding_dim}.faiss' if ratio < 1 else f's2s_test_{feature_extractor.model_name}{feature_extractor.embedding_dim}.faiss'
+    def __init__(self, feature_extractor=None, batch_size=128, ratio=1.0, save_dir='.'):
         self.dataset_path = f'street2shop_test_{ratio}' if ratio < 1 else 'street2shop_test'
         
         # load and sample/shuffle the test dataset
         try:
+            print(f"Loading dataset from {self.dataset_path}...")
             self.test_dataset = load_from_disk(self.dataset_path)
         except FileNotFoundError:
+            print(f"Dataset not found at {self.dataset_path}. Loading street2shop dataset...")
             try:
-                self.test_dataset = load_from_disk('street2shop')['test'].remove_columns(['street_photo_image', 'shop_photo_image'])
+                self.test_dataset = load_from_disk('street2shop')['test'].select_columns(['street_photo_image', 'shop_photo_image'])
             except FileNotFoundError:
                 self.test_dataset = load_dataset('street2shop')
                 self.test_dataset.save_to_disk('street2shop')
-                self.test_dataset = self.test_dataset['test'].remove_columns(['street_photo_image', 'shop_photo_image'])
+                self.test_dataset = self.test_dataset['test'].select_columns(['street_photo_image', 'shop_photo_image'])
 
+            print("length of test dataset before sampling:", len(self.test_dataset))
             def _sample_dataset(dataset, ratio):
                 valid_indices = []
-                for i in random.sample(range(len(dataset)), int(len(dataset) * ratio)): # random indices
+                for i in tqdm(random.sample(range(len(dataset)), int(len(dataset) * ratio)), desc="Sampling dataset"): # random indices
                     try:
                         item = dataset[i]   # check if the image at the index is uncorrupted
                         valid_indices.append(i)
@@ -295,6 +295,7 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
                         continue
                 return dataset.select(valid_indices)
             self.test_dataset = _sample_dataset(self.test_dataset, ratio)
+            print("length of test dataset after sampling:", len(self.test_dataset))
             self.test_dataset = self.test_dataset.add_column('index', list(range(len(self.test_dataset))))
             self.test_dataset.save_to_disk(self.dataset_path)
         
@@ -305,15 +306,23 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        res = faiss.StandardGpuResources()
+        if not feature_extractor:
+            return
+        
+        self.feature_extractor = feature_extractor
+        self.feature_extractor.eval()
+        
+        self.index_file = f's2s_test_{ratio}_{feature_extractor.model_name}{feature_extractor.embedding_dim}.faiss' if ratio < 1 else f's2s_test_{feature_extractor.model_name}{feature_extractor.embedding_dim}.faiss'
+        
         if os.path.exists(self.index_file):
             print(f"Loading FAISS index from {self.index_file}...")
-            self.gpu_index = faiss.read_index(os.path.join(save_dir, self.index_file))
-            self.gpu_index = faiss.index_cpu_to_gpu(res, 0, self.gpu_index)  # Transfer to GPU
+            self.index = faiss.read_index(os.path.join(save_dir, self.index_file))
         else:
-            # Create an HNSW index for inner product (cosine similarity)
-            index = faiss.IndexHNSWFlat(self.feature_extractor.embedding_dim, 32)  # 32 is the number of neighbors in the graph
-            self.gpu_index = faiss.index_cpu_to_gpu(res, 0, index)  # Transfer to GPU
+            print("Creating FAISS index...")
+            # Measure time for index creation
+            start_time = time.time()
+            self.index = faiss.IndexHNSWFlat(self.feature_extractor.embedding_dim, 32)  # 32 is the number of neighbors in the graph
+            print(f"Index creation time: {time.time() - start_time:.2f} seconds")
             
             # Process images in batches
             for start_idx in tqdm(range(0, len(self.test_dataset), batch_size), desc="Indexing shop images"):
@@ -321,7 +330,7 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
                 batch_items = [self.test_dataset[i] for i in range(start_idx, end_idx)]
                 
                 # Transform and stack images
-                shop_imgs = torch.stack([shop_transform(item['shop_photo_image']) for item in batch_items])
+                shop_imgs = torch.stack([shop_transform(item['shop_photo_image'].convert('RGB')) for item in batch_items])
                 
                 with torch.no_grad():
                     shop_imgs = shop_imgs.to(self.feature_extractor.device)
@@ -330,11 +339,11 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
                     if not self.feature_extractor.normalization:
                         faiss.normalize_L2(features)
                 
-                self.gpu_index.add(features)
+                self.index.add(features)
             
             # Save the index to a file
             print(f"Saving FAISS index to {self.index_file}...")
-            faiss.write_index(faiss.index_gpu_to_cpu(self.gpu_index), os.path.join(save_dir, self.index_file))
+            faiss.write_index(self.index, os.path.join(save_dir, self.index_file))
         
     def __len__(self):
         return len(self.test_dataset)
@@ -358,14 +367,14 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
             if not self.feature_extractor.normalization:
                 faiss.normalize_L2(query_features)
         
-        distances, indices = self.gpu_index.search(query_features, k)
+        distances, indices = self.index.search(query_features, k)
         return indices.tolist()
 
 
 ################################################################ 
 
 
-def evaluate_top_k_accuracies(dataset, k=10, num_samples=100, num_visualize=5):
+def evaluate_top_k_accuracies(dataset, query_indices, vis_indices=set(), k=10):
     """
     Evaluate the model using top-1, top-3, top-5 and top-10 accuracies.
     
@@ -376,18 +385,15 @@ def evaluate_top_k_accuracies(dataset, k=10, num_samples=100, num_visualize=5):
         - Dictionary with top-1, top-3, top-5 and top-10 accuracies
         - List of tuples (street_idx, retrieved_indices) for visualization
     """
-    # Randomly select indices from the test dataset
-    indices = random.sample(range(len(dataset.test_dataset)), num_samples)
     
     top_1_count = 0
     top_3_count = 0
     top_5_count = 0
     top_10_count = 0
     
-    # Store all evaluation results
-    all_results = []
+    vis_results = []
     
-    for idx in indices:
+    for idx in query_indices:
         # Get the street photo and its true category
         item = dataset.test_dataset[idx]
         street_photo = item['street_photo_image']
@@ -396,8 +402,8 @@ def evaluate_top_k_accuracies(dataset, k=10, num_samples=100, num_visualize=5):
         # Perform the search
         retrieved_indices = dataset.search(street_photo, k=k)
         
-        # Store result
-        all_results.append((idx, retrieved_indices[0]))
+        if idx in vis_indices:
+            vis_results.append((idx, retrieved_indices[0]))
         
         # Check if the true category is in the top-k results
         for position, retrieved_idx in enumerate(retrieved_indices[0]):  # retrieved_indices is a 2D array
@@ -414,16 +420,13 @@ def evaluate_top_k_accuracies(dataset, k=10, num_samples=100, num_visualize=5):
                 break  # Stop checking once the correct category is found
     
     accuracies = {
-        'top_1_accuracy': top_1_count / num_samples,
-        'top_3_accuracy': top_3_count / num_samples,
-        'top_5_accuracy': top_5_count / num_samples,
-        'top_10_accuracy': top_10_count / num_samples
+        'top_1_accuracy': top_1_count / len(query_indices),
+        'top_3_accuracy': top_3_count / len(query_indices),
+        'top_5_accuracy': top_5_count / len(query_indices),
+        'top_10_accuracy': top_10_count / len(query_indices)
     }
     
-    # Randomly select m samples for visualization
-    visualization_data = random.sample(all_results, min(num_visualize, len(all_results)))
-    
-    return accuracies, visualization_data
+    return accuracies, vis_results
 
 
 ################################################################ 
