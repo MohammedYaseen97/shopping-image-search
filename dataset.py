@@ -359,6 +359,8 @@ class Street2ShopImageSimilarityTestDataset(Dataset):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
+        if street_photo.mode != 'RGB':
+            street_photo = street_photo.convert('RGB')
         street_img = street_transform(street_photo).unsqueeze(0)
         with torch.no_grad():
             street_img = street_img.to(self.feature_extractor.device)
@@ -393,7 +395,7 @@ def evaluate_top_k_accuracies(dataset, query_indices, vis_indices=set(), k=10):
     
     vis_results = []
     
-    for idx in query_indices:
+    for idx in tqdm(query_indices, desc="Evaluating top-k accuracies"):
         # Get the street photo and its true category
         item = dataset.test_dataset[idx]
         street_photo = item['street_photo_image']

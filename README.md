@@ -46,6 +46,46 @@ shopping-image-search/
 │ └── clip_vit.py # CLIP ViT model implementation
 ```
 
+## Model Selection
+
+### CLIP ViT Model
+
+The CLIP ViT model is chosen for its powerful ability to learn visual representations that are aligned with textual descriptions. This model leverages a Vision Transformer (ViT) architecture, which processes images as sequences of patches, allowing it to capture detailed and contextual information effectively. CLIP ViT is particularly well-suited for fashion image retrieval due to its ability to understand and encode complex visual patterns and textures, making it an excellent choice for coarse retrieval tasks. Its pretraining on a diverse set of image-text pairs enables it to generalize well to various visual domains, enhancing the retrieval accuracy.
+
+**Citation:**
+- Radford, A., et al. (2021). [Learning Transferable Visual Models From Natural Language Supervision](https://arxiv.org/abs/2103.00020). In Proceedings of the International Conference on Machine Learning (ICML).
+
+### BLIP-2 Model
+
+BLIP-2 is integrated into the pipeline for its advanced capabilities in generating text captions from images, which significantly enhances query representation. Coupled with the MiniLM sentence transformer, it provides rich, descriptive text embeddings that complement image embeddings, facilitating a more comprehensive multi-modal retrieval process. This approach not only improves the accuracy of matching street photos with shop photos but also enriches the semantic understanding of the images, leading to better retrieval performance. BLIP-2's ability to bridge the gap between visual and textual data makes it a valuable addition to the pipeline.
+
+**Citation:**
+- Li, J., et al. (2022). [BLIP-2: Bootstrapping Language-Image Pre-training with Frozen Image Encoders and Large Language Models](https://arxiv.org/abs/2201.12086). In Proceedings of the Conference on Empirical Methods in Natural Language Processing (EMNLP).
+
+### MobileViT Re-Ranker
+
+MobileViT is employed as a re-ranking model to refine the final ranking of retrieved images. Its lightweight and efficient transformer-based architecture allows it to process images quickly while maintaining high accuracy. MobileViT enhances the retrieval pipeline by providing a detailed analysis of the candidate images, ensuring that the most relevant results are prioritized. This model is particularly useful in scenarios where computational resources are limited but high performance is required.
+
+**Citation:**
+- Mehta, S., et al. (2021). [MobileViT: Light-weight, General-purpose, and Mobile-friendly Vision Transformer](https://arxiv.org/abs/2110.02178). In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV).
+
+### YOLO Cropper
+
+YOLOv8 is utilized for multi-crop detection, enabling the system to identify and extract multiple regions of interest from an image. This capability is crucial for fashion image retrieval, where different parts of an outfit may need to be analyzed separately. YOLO's real-time object detection performance ensures that the cropping process is both fast and accurate, providing high-quality inputs for subsequent stages of the retrieval pipeline.
+
+**Citation:**
+- Redmon, J., et al. (2016). [You Only Look Once: Unified, Real-Time Object Detection](https://arxiv.org/abs/1506.02640). In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR).
+
+## Training Details
+
+- Uses contrastive learning with cosine embedding loss
+- Implements early stopping based on validation loss
+- Supports both CPU and GPU training
+- Includes memory optimization for large datasets
+- Uses data augmentation specific to street and shop photos:
+  - Street photos: More aggressive augmentation (blur, affine transforms)
+  - Shop photos: Lighter augmentation (color jitter, flips)
+
 ## Usage
 
 ### Training
@@ -102,91 +142,43 @@ print("Top-5 Accuracy:", accuracies['top_5_accuracy'])
 print("Top-10 Accuracy:", accuracies['top_10_accuracy'])
 ```
 
-## Model Architecture
-
-### Base Model
-- Defines common functionality for all models
-- Handles model saving/loading
-- Implements prediction interface
-
-### Xception Model
-- Based on the Xception architecture
-- Pretrained on ImageNet
-- Modified final layer for embedding generation
-
-### CLIP ViT Model
-- Uses OpenAI's CLIP Vision Transformer
-- Leverages pretrained visual understanding
-- Projects embeddings to specified dimension
-
-## Training Details
-
-- Uses contrastive learning with cosine embedding loss
-- Implements early stopping based on validation loss
-- Supports both CPU and GPU training
-- Includes memory optimization for large datasets
-- Uses data augmentation specific to street and shop photos:
-  - Street photos: More aggressive augmentation (blur, affine transforms)
-  - Shop photos: Lighter augmentation (color jitter, flips)
-
-## Evaluation
-
-The system evaluates performance using:
-- Top-1, Top-3, Top-5 and Top-10 accuracy
-- Validation loss
-- Cosine similarity metrics
-
-## Performance Evaluation
-
-### Retrieval Performance
-
-The performance of the image retrieval system is evaluated using top-k accuracy metrics. We compare the performance of the Xception and CLIP ViT models in terms of top-1, top-3, top-5, and top-10 accuracy.
-
-### Visualization of Results
-
-The system includes functionality to visualize the retrieval results. For a given query street photo, the top retrieved shop photos are displayed to assess the model's performance qualitatively.
-
-### Model Performance Comparison
-
-A bar chart is generated to compare the top-k accuracy of the Xception and CLIP ViT models, providing a visual representation of their performance differences.
-
-### Enhancements to Retrieval Performance
+## Enhancements to Retrieval Performance
 
 Inspired by Pinterest's image search pipeline, the following enhancements are implemented:
 
 1. **Multi-Crop Detection (YOLOv8):** Detects multiple crops in an image to improve retrieval accuracy.
 2. **Query Expansion (BLIP-2):** Generates text captions for images to enhance query representation.
-3. **Multi-Modal Embeddings (CLIP + Xception + FashionBERT):** Combines embeddings from multiple models for a richer feature representation.
+3. **Multi-Modal Embeddings (CLIP ViT + MiniLM):** Combines embeddings from CLIP ViT for images and MiniLM for text to create a richer feature representation.
 4. **Multi-Stage Retrieval (Coarse-to-Fine):** A retrieval pipeline that filters candidates using coarse similarity measures before fine-tuning with more detailed models.
-5. **Re-Ranking (DeiT-Small Transformer):** Refines the final ranking of retrieved images using a transformer model.
+5. **Re-Ranking (MobileViT):** Refines the final ranking of retrieved images using a MobileViT model.
 
 ### Pipeline Execution
 
-The full pipeline is executed to perform a fashion search, leveraging the above enhancements to improve retrieval performance.
+The full pipeline is executed to perform a fashion search, leveraging the above enhancements to improve retrieval performance. The pipeline includes:
+- **Image and Text Embedding Generation**: Using CLIP ViT for image embeddings and MiniLM for text captions.
+- **FAISS Indexing and Search**: Efficiently retrieves top candidates using FAISS indices for both image and text embeddings.
+- **Re-Ranking**: Combines image and text similarity scores to refine the final ranking of retrieved items using MobileViT.
+
+## Results
+
+The enhanced pipeline demonstrated improved retrieval performance, achieving higher top-k accuracy metrics compared to baseline models. The integration of multi-modal embeddings and re-ranking strategies significantly contributed to the system's ability to accurately match street photos with shop photos.
+
+Sample retrieval results:
+
+### Sample Results
+
+| Model | Example Retrievals |
+|-------|-------------------|
+| Xception | <img src="readme_data/xception.png" width="600"> |
+| CLIP ViT | <img src="readme_data/clip.png" width="600"> |
+| Full Pipeline | <img src="readme_data/pipe.png" width="600"> |
+
+The following graph illustrates the performance comparison between different model configurations and retrieval strategies. The x-axis represents different top-k metrics (k=1,3,5,10), while the y-axis shows the accuracy percentage. The enhanced pipeline with multi-modal embeddings and re-ranking consistently outperforms the baseline CLIP ViT model across all metrics.
+
+![Retrieval Results](readme_data/performance.png)
 
 ## Acknowledgments
 
 - Street2Shop dataset
 - CLIP model from OpenAI
 - FAISS from Facebook Research
-
-## Model Selection
-
-### Xception Model
-
-The Xception model is chosen for its ability to capture multiple contexts through its architecture, which uses depthwise separable convolutions. This allows the model to focus on subtle details in fashion images by processing different subsets of channels separately, making it particularly effective for distinguishing fine-grained features in clothing items.
-
-**Citation:**
-- Chollet, F. (2017). [Xception: Deep Learning with Depthwise Separable Convolutions](https://arxiv.org/abs/1610.02357). In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR).
-
-### CLIP ViT Model
-
-The CLIP ViT model is based on the Vision Transformer (ViT) architecture, which divides images into patches and processes them in parallel. This patch-based approach enables the model to encode detailed information effectively, making it well-suited for fashion image retrieval where capturing intricate patterns and textures is crucial.
-
-**Citation:**
-- Radford, A., Kim, J. W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S., Sastry, G., Askell, A., Mishkin, P., Clark, J., Krueger, G., & Sutskever, I. (2021). [Learning Transferable Visual Models From Natural Language Supervision](https://arxiv.org/abs/2103.00020). In Proceedings of the International Conference on Machine Learning (ICML).
-
-### Why These Models?
-
-- **Xception**: Utilizes multiple contexts through its architecture, making it adept at capturing subtle details in fashion images.
-- **CLIP ViT**: Employs a patch-based approach to encode detailed information, ideal for capturing intricate patterns and textures in fashion items.

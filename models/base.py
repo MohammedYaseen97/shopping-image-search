@@ -53,12 +53,3 @@ class Model(nn.Module):
         except Exception as e:
             print(f"Failed to save model weights: {e}")
 
-
-    def predict(self, dataloader):
-        self.model.eval()
-        embeddings = []
-        with torch.no_grad():
-            for images in dataloader:
-                embeddings.append(self.forward(images))
-        return torch.cat(embeddings, dim=0)
-

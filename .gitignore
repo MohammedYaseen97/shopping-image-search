@@ -3,3 +3,4 @@ virtual
 street2shop*
 saved_models
 *.faiss
+*.pt
